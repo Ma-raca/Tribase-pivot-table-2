@@ -623,7 +623,7 @@ void Index::single_thread_search(size_t n, const float* queries, size_t k, float
                                    list.get_sqrt_candidate2centroid(), sub_k, list.get_sub_nearest_IP_id(),
                                    list.get_sub_nearest_IP_dis(), list.get_sub_farest_IP_id(), list.get_sub_farest_IP_dis(),
                                    list.get_sub_nearest_L2_id(), list.get_sub_nearest_L2_dis(),
-                                   list.get_pivot_m(), list.get_pivots(), list.get_pivot2data_sqrt(),
+                                   ((opt_level & OptLevel::OPT_PIVOT) ? list.get_pivot_m() : 0), list.get_pivots(), list.get_pivot2data_sqrt(),
                                    if_skip.get(), simi, idxi, stats, centroid_codes.get() + listids[j] * d, ratio, ratio);
                 // if(i == 0 && j < 10 && omp_get_thread_num() == 0) {
                 //     for(int t = 0; t < 10; t++){
