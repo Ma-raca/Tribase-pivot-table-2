@@ -45,9 +45,9 @@ We also provide a dockerfile based on Ubuntu22.04 with all the dependencies inst
 ```bash
 docker build -t tribase .
 docker run -it tribase
-./release/bin/query --benchmarks_path ./benchmarks --dataset nuswide \
+./release/bin/query --benchmarks_path ./benchmarks --dataset iris \
   --nprobes 50 100 300 1000 --run_faiss --verbose
-./release/bin/query --benchmarks_path ./benchmarks --dataset nuswide \
+./release/bin/query --benchmarks_path ./benchmarks --dataset iris \
   --opt_levels OPT_TRIANGLE OPT_TRI_SUBNN_L2 OPT_TRI_SUBNN_IP OPT_ALL \
   --nprobes 50 100 300 1000 --cache --loop 3 --verbose
 ```
