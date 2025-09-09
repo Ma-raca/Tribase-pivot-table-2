@@ -25,6 +25,7 @@ enum OptLevel {
     OPT_TRIANGLE = 0b001,
     OPT_SUBNN_L2 = 0b010,
     OPT_SUBNN_IP = 0b100,
+    OPT_PIVOT = 0b1000,
     OPT_TRI_SUBNN_L2 = 0b011,
     OPT_TRI_SUBNN_IP = 0b101,
     OPT_SUBNN_ONLY = 0b110,
@@ -42,6 +43,7 @@ inline bool isLegalOptLevel(int opt) {
         case OPT_TRIANGLE:
         case OPT_SUBNN_L2:
         case OPT_SUBNN_IP:
+        case OPT_PIVOT:
         case OPT_TRI_SUBNN_L2:
         case OPT_TRI_SUBNN_IP:
         case OPT_SUBNN_ONLY:
@@ -70,6 +72,8 @@ inline OptLevel str2OptLevel(const std::string& str) {
         return OptLevel::OPT_SUBNN_L2;
     } else if (str == "OPT_SUBNN_IP") {
         return OptLevel::OPT_SUBNN_IP;
+    } else if (str == "OPT_PIVOT") {
+        return OptLevel::OPT_PIVOT;
     } else if (str == "OPT_TRI_SUBNN_L2") {
         return OptLevel::OPT_TRI_SUBNN_L2;
     } else if (str == "OPT_TRI_SUBNN_IP") {

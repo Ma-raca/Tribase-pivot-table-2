@@ -152,6 +152,26 @@ r2 (or Average Distance Ratio in paper) is a metric that measures the average di
   --cache --verbose
 ```
 
+### Pivot Table Sub-index (experimental)
+
+We implemented an experimental Pivot Table sub-index that prunes candidates using multiple pivots per IVF list based on triangle inequality.
+
+- Core idea: for each IVF list, select m pivots and precompute d(pivot, data). At query time, compute d(q, pivot); if |d(q,p) - d(p,data)| ≥ thr for any pivot, the data is safely pruned without computing d(q,data).
+- Safe threshold: thr = sqrt(topK_radius). We keep correctness by comparing on distances (not squared). In code we use sqrt(topK) from the current heap.
+- Current defaults (no extra CLI yet):
+  - m = min(sub_k, list_size), m ≥ 1
+  - pivot selection = greedy farthest-point sampling (FPS) seeded by the element closest to the centroid (good coverage and stable build time)
+  - threshold scaling = 1.0 (i.e., thr = 1.0 × sqrt(topK)). Values < 1.0 are unsafe; values > 1.0 are stricter and prune less
+
+Planned (to be exposed as CLI after confirmation):
+- `--pivot_m`: number of pivots per IVF list (trade-off: memory/build time ↑ vs. pruning ↑)
+- `--pivot_method`: pivot selection strategy. Options: `fps` (default), `kmeans`, `random`
+- `--pivot_ratio`: scaling on the safe threshold, must be ≥ 1.0 to keep correctness; larger → fewer prunes but still safe
+
+Notes:
+- Pivot pruning works on L2 path and coexists with existing `OPT_TRIANGLE` / `OPT_SUBNN_*`. Use `OPT_PIVOT` in `--opt_levels` to enable it once parameters are exposed.
+- CSV adds `pivot_skip` column (number of candidates pruned by pivots).
+
 #### Further Usage
 
 Finally, you can use the following command to get a more comprehensive usage guide for this script:

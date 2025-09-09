@@ -57,6 +57,9 @@ class IVFScanBase {
                             const float* farest_IP_dis,
                             const idx_t* nearest_L2_id,
                             const float* nearest_L2_dis,
+                            size_t pivot_m,
+                            const float* pivots,
+                            const float* pivot2data_sqrt,
                             bool* if_skip,
                             float* simi,
                             idx_t* idxi,
@@ -189,6 +192,9 @@ class IVFScan : public IVFScanBase {
                     const float* farest_IP_dis,
                     const idx_t* nearest_L2_id,
                     const float* nearest_L2_dis,
+                    size_t pivot_m,
+                    const float* pivots,
+                    const float* pivot2data_sqrt,
                     bool* if_skip,
                     float* simi,
                     idx_t* idxi,
@@ -241,7 +247,34 @@ class IVFScan : public IVFScanBase {
         if constexpr (opt_level & OptLevel::OPT_SUBNN_L2) {
             sqrt_simi = sqrt(simi[0]);
         }
+        // Pre-compute d(q,p) sqrt distances if pivots are provided
+        std::unique_ptr<float[]> d_qp;
+        if (pivot_m > 0 && pivots) {
+            d_qp = std::make_unique<float[]>(pivot_m);
+            for (size_t pk = 0; pk < pivot_m; ++pk) {
+                float d2 = calculatedEuclideanDistance(query, pivots + pk * d, d);
+                d_qp[pk] = std::sqrt(d2);
+            }
+        }
+
         for (size_t i = scan_begin; i < scan_end; i++) {
+            // Pivot pruning: triangle inequality with multiple pivots
+            if (pivot_m > 0 && pivot2data_sqrt) {
+                float sqrt_thr = sqrt_ratio * std::sqrt(simi[0]);
+                bool pruned = false;
+                size_t base = i * pivot_m;
+                for (size_t pk = 0; pk < pivot_m; ++pk) {
+                    float lb = std::fabs(d_qp[pk] - pivot2data_sqrt[base + pk]);
+                    IF_STATS { stats->check_pivot_count += 1; }
+                    if (lb >= sqrt_thr) {
+                        if_skip[i] = true;
+                        pruned = true;
+                        IF_STATS { stats->skip_pivot_count += 1; }
+                        break;
+                    }
+                }
+                if (pruned) { continue; }
+            }
             if constexpr ((opt_level & OptLevel::OPT_SUBNN_IP) || (opt_level & OptLevel::OPT_SUBNN_L2)) {
                 _mm_prefetch((char*)(if_skip + i + 1), _MM_HINT_T0);
                 if (if_skip[i]) {

@@ -26,6 +26,11 @@ class IVF {
     std::unique_ptr<idx_t[]> sub_farest_IP_id;
     std::unique_ptr<float[]> sub_farest_IP_dis;
 
+    // Pivot Table structures
+    size_t pivot_m = 0;  // number of pivots per list
+    std::unique_ptr<float[]> pivots;            // [pivot_m, d]
+    std::unique_ptr<float[]> pivot2data_sqrt;   // [list_size, pivot_m] sqrt(L2)
+
    public:
     // Constructor
     IVF(size_t listSize = 0, size_t d = 0, size_t subK = 0, OptLevel optLevel = OptLevel::OPT_ALL);
@@ -71,6 +76,13 @@ class IVF {
     const idx_t get_sub_farest_IP_id(size_t i, size_t k) const { return sub_farest_IP_id[i * sub_k + k]; }
     const float* get_sub_farest_IP_dis() const { return sub_farest_IP_dis.get(); }
     const float get_sub_farest_IP_dis(size_t i, size_t k) const { return sub_farest_IP_dis[i * sub_k + k]; }
+
+    // Pivot helpers
+    size_t get_pivot_m() const { return pivot_m; }
+    const float* get_pivots() const { return pivots.get(); }
+    const float* get_pivot_ptr(size_t k) const { return pivots.get() + k * d; }
+    const float* get_pivot2data_sqrt() const { return pivot2data_sqrt.get(); }
+    float get_pivot2data_sqrt(size_t i, size_t k) const { return pivot2data_sqrt[i * pivot_m + k]; }
 };
 }  // namespace tribase
 

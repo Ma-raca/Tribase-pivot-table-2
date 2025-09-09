@@ -5,6 +5,8 @@
 #include <atomic>
 #include <cmath>
 #include <filesystem>
+#include <vector>
+#include <limits>
 #include <memory>
 #include "IVF.h"
 #include "IVFScan.hpp"
@@ -86,9 +88,10 @@ void Index::train(size_t n, const float* codes, bool faiss, bool lite) {
 }
 
 std::unique_ptr<IVFScanBase> Index::get_scanner(MetricType metric, OptLevel opt_level, size_t k, EdgeDevice edge_device_enabled) {
+    OptLevel base_opt = static_cast<OptLevel>(static_cast<int>(opt_level) & 0b111);
     if (metric == MetricType::METRIC_L2) {
         if (edge_device_enabled) {
-            switch (opt_level) {
+            switch (base_opt) {
                 case OptLevel::OPT_NONE:
                     return std::unique_ptr<IVFScanBase>(new IVFScan<MetricType::METRIC_L2, OptLevel::OPT_NONE, EdgeDevice::EDGEDEVIVE_ENABLED>(d, k));
                 case OptLevel::OPT_TRIANGLE:
@@ -109,7 +112,7 @@ std::unique_ptr<IVFScanBase> Index::get_scanner(MetricType metric, OptLevel opt_
                     throw std::runtime_error("Unsupported opt_level");
             }
         } else {
-            switch (opt_level) {
+            switch (base_opt) {
                 case OptLevel::OPT_NONE:
                     return std::unique_ptr<IVFScanBase>(new IVFScan<MetricType::METRIC_L2, OptLevel::OPT_NONE, EdgeDevice::EDGEDEVIVE_DISABLED>(d, k));
                 case OptLevel::OPT_TRIANGLE:
@@ -132,7 +135,7 @@ std::unique_ptr<IVFScanBase> Index::get_scanner(MetricType metric, OptLevel opt_
         }
     } else {
         if (edge_device_enabled) {
-            switch (opt_level) {
+            switch (base_opt) {
                 case OptLevel::OPT_NONE:
                     return std::unique_ptr<IVFScanBase>(new IVFScan<MetricType::METRIC_IP, OptLevel::OPT_NONE, EdgeDevice::EDGEDEVIVE_ENABLED>(d, k));
                 case OptLevel::OPT_TRIANGLE:
@@ -153,7 +156,7 @@ std::unique_ptr<IVFScanBase> Index::get_scanner(MetricType metric, OptLevel opt_
                     throw std::runtime_error("Unsupported opt_level");
             }
         } else {
-            switch (opt_level) {
+            switch (base_opt) {
                 case OptLevel::OPT_NONE:
                     return std::unique_ptr<IVFScanBase>(new IVFScan<MetricType::METRIC_IP, OptLevel::OPT_NONE, EdgeDevice::EDGEDEVIVE_DISABLED>(d, k));
                 case OptLevel::OPT_TRIANGLE:
@@ -480,6 +483,55 @@ void Index::add(size_t n, const float* codes) {
 #endif
             }
 
+            // Pivot Table sub-index
+            if (opt_level & OptLevel::OPT_PIVOT) {
+                size_t pivot_m = std::min(static_cast<size_t>(std::max<size_t>(1, sub_k)), nb);
+                list.pivot_m = pivot_m;
+                if (pivot_m > 0) {
+                    list.pivots = std::make_unique<float[]>(pivot_m * d);
+                    list.pivot2data_sqrt = std::make_unique<float[]>(nb * pivot_m);
+
+                    // Farthest Point Sampling within this list
+                    std::vector<size_t> piv_idx(pivot_m, 0);
+                    // choose first pivot as the element closest to centroid
+                    size_t first = 0;
+                    float best_dis = std::numeric_limits<float>::max();
+                    for (size_t i = 0; i < nb; ++i) {
+                        float dis2 = calculatedEuclideanDistance(xb + i * d, centroid_code, d);
+                        if (dis2 < best_dis) {
+                            best_dis = dis2;
+                            first = i;
+                        }
+                    }
+                    piv_idx[0] = first;
+                    std::vector<float> min_d2(nb, std::numeric_limits<float>::max());
+                    for (size_t i = 0; i < nb; ++i) {
+                        float d2 = calculatedEuclideanDistance(xb + i * d, xb + piv_idx[0] * d, d);
+                        min_d2[i] = d2;
+                    }
+                    for (size_t m = 1; m < pivot_m; ++m) {
+                        size_t best_i = 0; float best_val = -1.0f;
+                        for (size_t i = 0; i < nb; ++i) {
+                            float d2 = calculatedEuclideanDistance(xb + i * d, xb + piv_idx[m - 1] * d, d);
+                            if (d2 < min_d2[i]) min_d2[i] = d2;
+                            if (min_d2[i] > best_val) { best_val = min_d2[i]; best_i = i; }
+                        }
+                        piv_idx[m] = best_i;
+                    }
+                    // write pivots
+                    for (size_t m = 0; m < pivot_m; ++m) {
+                        std::copy_n(xb + piv_idx[m] * d, d, list.pivots.get() + m * d);
+                    }
+                    // compute pivot2data_sqrt
+                    for (size_t i = 0; i < nb; ++i) {
+                        for (size_t m = 0; m < pivot_m; ++m) {
+                            float d2 = calculatedEuclideanDistance(xb + i * d, list.pivots.get() + m * d, d);
+                            list.pivot2data_sqrt[i * pivot_m + m] = std::sqrt(d2);
+                        }
+                    }
+                }
+            }
+
 #pragma omp critical
             {
                 total_processd++;
@@ -570,8 +622,9 @@ void Index::single_thread_search(size_t n, const float* queries, size_t k, float
                 scaner->scan_codes(scan_begin, scan_end, list_size, list.get_candidate_codes(), list.get_candidate_id(), list.get_candidate_norms(), centroid2query, list.get_candidate2centroid(),
                                    list.get_sqrt_candidate2centroid(), sub_k, list.get_sub_nearest_IP_id(),
                                    list.get_sub_nearest_IP_dis(), list.get_sub_farest_IP_id(), list.get_sub_farest_IP_dis(),
-                                   list.get_sub_nearest_L2_id(), list.get_sub_nearest_L2_dis(), if_skip.get(), simi, idxi,
-                                   stats, centroid_codes.get() + listids[j] * d, ratio, ratio);
+                                   list.get_sub_nearest_L2_id(), list.get_sub_nearest_L2_dis(),
+                                   list.get_pivot_m(), list.get_pivots(), list.get_pivot2data_sqrt(),
+                                   if_skip.get(), simi, idxi, stats, centroid_codes.get() + listids[j] * d, ratio, ratio);
                 // if(i == 0 && j < 10 && omp_get_thread_num() == 0) {
                 //     for(int t = 0; t < 10; t++){
                 //         printf("%f ", list.get_sub_nearest_L2_dis(t, 3));

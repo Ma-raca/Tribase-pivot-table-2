@@ -68,6 +68,14 @@ void IVF::reset(size_t listSize, size_t d, size_t subK, OptLevel optLevel) {
         sub_farest_IP_id = std::make_unique<idx_t[]>(listSize * subK);
         sub_farest_IP_dis = std::make_unique<float[]>(listSize * subK);
     }
+
+    if (optLevel & OptLevel::OPT_PIVOT) {
+        // pivot_m 默认由构建阶段设置；此处先不分配 pivots（取决于 m）
+        // 提前清空，避免旧指针
+        pivot_m = 0;
+        pivots.reset();
+        pivot2data_sqrt.reset();
+    }
 }
 
 void IVF::save_IVF(std::ostream& os) const {
@@ -92,6 +100,14 @@ void IVF::save_IVF(std::ostream& os) const {
         os.write(reinterpret_cast<const char*>(sub_nearest_IP_dis.get()), list_size * sub_k * sizeof(float));
         os.write(reinterpret_cast<const char*>(sub_farest_IP_id.get()), list_size * sub_k * sizeof(idx_t));
         os.write(reinterpret_cast<const char*>(sub_farest_IP_dis.get()), list_size * sub_k * sizeof(float));
+    }
+
+    if (opt_level & OptLevel::OPT_PIVOT) {
+        os.write(reinterpret_cast<const char*>(&pivot_m), sizeof(size_t));
+        if (pivot_m > 0) {
+            os.write(reinterpret_cast<const char*>(pivots.get()), pivot_m * d * sizeof(float));
+            os.write(reinterpret_cast<const char*>(pivot2data_sqrt.get()), list_size * pivot_m * sizeof(float));
+        }
     }
 }
 
@@ -127,6 +143,16 @@ void IVF::load_IVF(std::istream& is) {
         is.read(reinterpret_cast<char*>(sub_nearest_IP_dis.get()), list_size * sub_k * sizeof(float));
         is.read(reinterpret_cast<char*>(sub_farest_IP_id.get()), list_size * sub_k * sizeof(idx_t));
         is.read(reinterpret_cast<char*>(sub_farest_IP_dis.get()), list_size * sub_k * sizeof(float));
+    }
+
+    if (opt_level & OptLevel::OPT_PIVOT) {
+        is.read(reinterpret_cast<char*>(&pivot_m), sizeof(size_t));
+        if (pivot_m > 0) {
+            pivots = std::make_unique<float[]>(pivot_m * d);
+            pivot2data_sqrt = std::make_unique<float[]>(list_size * pivot_m);
+            is.read(reinterpret_cast<char*>(pivots.get()), pivot_m * d * sizeof(float));
+            is.read(reinterpret_cast<char*>(pivot2data_sqrt.get()), list_size * pivot_m * sizeof(float));
+        }
     }
 }
 
