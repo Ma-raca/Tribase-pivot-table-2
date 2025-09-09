@@ -12,6 +12,8 @@
 #endif
 
 #include <inttypes.h>
+#include <algorithm>
+#include <cctype>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -36,6 +38,24 @@ enum EdgeDevice {
     EDGEDEVIVE_ENABLED,
     EDGEDEVIVE_DISABLED
 };
+
+// Pivot selection methods
+enum PivotMethod {
+    PIVOT_FPS = 0,     // farthest point sampling (默认)
+    PIVOT_FFT = 1,     // farthest first traversal
+    PIVOT_RANDOM = 2,  // random sampling
+    PIVOT_KMEANS = 3   // k-means centroids (占位，暂未实现专用路径)
+};
+
+inline PivotMethod str2PivotMethod(const std::string& str) {
+    auto lower = str;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return std::tolower(c); });
+    if (lower == "fps") return PivotMethod::PIVOT_FPS;
+    if (lower == "fft") return PivotMethod::PIVOT_FFT;
+    if (lower == "random" || lower == "rand") return PivotMethod::PIVOT_RANDOM;
+    if (lower == "kmeans" || lower == "k-means") return PivotMethod::PIVOT_KMEANS;
+    return PivotMethod::PIVOT_FPS;
+}
 
 inline bool isLegalOptLevel(int opt) {
     switch (opt) {

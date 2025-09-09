@@ -20,7 +20,10 @@ class Index {
           size_t sub_nlist = 1,
           size_t sub_nprobe = 1,
           bool verbose = false,
-          EdgeDevice edge_device_enabled = EdgeDevice::EDGEDEVIVE_DISABLED);
+          EdgeDevice edge_device_enabled = EdgeDevice::EDGEDEVIVE_DISABLED,
+          size_t pivot_m = 0,
+          PivotMethod pivot_method = PivotMethod::PIVOT_FPS,
+          float pivot_ratio = 1.0f);
 
     Index& operator=(Index&& other) noexcept;
 
@@ -52,6 +55,11 @@ class Index {
     size_t sub_k;
     size_t sub_nlist;
     size_t sub_nprobe;
+
+    // pivot config
+    size_t pivot_m = 0;            // 0 表示使用 sub_k 或由 pivot_ratio 推导
+    PivotMethod pivot_method = PivotMethod::PIVOT_FPS;
+    float pivot_ratio = 1.0f;      // 当 pivot_m==0 时，可用 ratio*sub_k 推导
 
     bool verbose;
     EdgeDevice edge_device_enabled;

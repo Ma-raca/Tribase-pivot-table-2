@@ -8,9 +8,12 @@ result
 *.npy
 gmon.out
 benchmarks/sift1m
+benchmarks/gist
 benchmarks/msong
 benchmarks/glove25
 benchmarks/nuswide
+benchmarks/ccnews
+benchmarks/yahooaq
 benchmarks/fasion_mnist_784
 benchmarks/sift1b
 benchmarks/deep1b

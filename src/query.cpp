@@ -56,6 +56,18 @@ int main(int argc, char* argv[]) {
         .help("ratio of the number of subNNs to the number of clusters")
         .action([](const std::string& value) -> float { return std::stof(value); });
     program.add_argument("--metric").default_value("l2").help("metric type");
+    // pivot params
+    program.add_argument("--pivot_m")
+        .default_value(0ul)
+        .action([](const std::string& value) -> size_t { return std::stoul(value); })
+        .help("number of pivots per list (0 means derive from subk * pivot_ratio)");
+    program.add_argument("--pivot_method")
+        .default_value(std::string("fps"))
+        .help("pivot selection method: fps|fft|random|kmeans");
+    program.add_argument("--pivot_ratio")
+        .default_value(1.0f)
+        .action([](const std::string& value) -> float { return std::stof(value); })
+        .help("pivot count = max(1, round(subk * pivot_ratio)) when pivot_m == 0");
     program.add_argument("--run_faiss").default_value(false).implicit_value(true).help("run faiss");
     program.add_argument("--loop").default_value(1ul).action(
         [](const std::string& value) -> size_t { return std::stoul(value); });
@@ -123,6 +135,9 @@ int main(int argc, char* argv[]) {
     bool train_only = program.get<bool>("train_only");
     bool cache = program.get<bool>("cache");
     float sub_nprobe_ratio = program.get<float>("sub_nprobe_ratio");
+    size_t pivot_m = program.get<size_t>("pivot_m");
+    PivotMethod pivot_method = str2PivotMethod(program.get<std::string>("pivot_method"));
+    float pivot_ratio = program.get<float>("pivot_ratio");
 
     std::string base_path = std::format("{}/{}/origin/{}_base.{}", benchmarks_path, dataset, dataset, input_format);
     std::string query_path = std::format("{}/{}/origin/{}_query.{}", benchmarks_path, dataset, dataset, input_format);
@@ -365,7 +380,7 @@ int main(int argc, char* argv[]) {
     } else {
         std::tie(base, nb, d) = loadXvecs(base_path);
         nlist = static_cast<size_t>(std::sqrt(nb));
-        index = Index(d, nlist, 0, metric, added_opt_levels, subk, sub_nlist, sub_nprobe, verbose);
+        index = Index(d, nlist, 0, metric, added_opt_levels, subk, sub_nlist, sub_nprobe, verbose, EdgeDevice::EDGEDEVIVE_DISABLED, pivot_m, pivot_method, pivot_ratio);
 
         auto build_start = std::chrono::high_resolution_clock::now();
         index.train(nb, base.get());

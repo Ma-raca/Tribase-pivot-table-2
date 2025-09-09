@@ -19,8 +19,8 @@
 
 namespace tribase {
 
-Index::Index(size_t d, size_t nlist, size_t nprobe, MetricType metric, OptLevel opt_level, size_t sub_k, size_t sub_nlist, size_t sub_nprobe, bool verbose, EdgeDevice edge_device_enabled)
-    : d(d), nlist(nlist), nprobe(nprobe), metric(metric), opt_level(opt_level), sub_k(sub_k), sub_nlist(sub_nlist), sub_nprobe(sub_nprobe), verbose(verbose), edge_device_enabled(edge_device_enabled) {
+Index::Index(size_t d, size_t nlist, size_t nprobe, MetricType metric, OptLevel opt_level, size_t sub_k, size_t sub_nlist, size_t sub_nprobe, bool verbose, EdgeDevice edge_device_enabled, size_t pivot_m, PivotMethod pivot_method, float pivot_ratio)
+    : d(d), nlist(nlist), nprobe(nprobe), metric(metric), opt_level(opt_level), sub_k(sub_k), sub_nlist(sub_nlist), sub_nprobe(sub_nprobe), verbose(verbose), edge_device_enabled(edge_device_enabled), pivot_m(pivot_m), pivot_method(pivot_method), pivot_ratio(pivot_ratio) {
     lists = std::make_unique<IVF[]>(nlist);
     centroid_codes = std::make_unique<float[]>(nlist * d);
     centroid_ids = std::make_unique<idx_t[]>(nlist);
@@ -39,6 +39,9 @@ Index& Index::operator=(Index&& other) noexcept {
     sub_nprobe = other.sub_nprobe;
     verbose = other.verbose;
     edge_device_enabled = other.edge_device_enabled;
+    pivot_m = other.pivot_m;
+    pivot_method = other.pivot_method;
+    pivot_ratio = other.pivot_ratio;
     lists = std::move(other.lists);
     centroid_codes = std::move(other.centroid_codes);
     centroid_ids = std::move(other.centroid_ids);
@@ -483,50 +486,122 @@ void Index::add(size_t n, const float* codes) {
 #endif
             }
 
-            // Pivot Table sub-index
+            // Pivot Table sub-index - selectable method
             if (opt_level & OptLevel::OPT_PIVOT) {
-                size_t pivot_m = std::min(static_cast<size_t>(std::max<size_t>(1, sub_k)), nb);
-                list.pivot_m = pivot_m;
-                if (pivot_m > 0) {
-                    list.pivots = std::make_unique<float[]>(pivot_m * d);
-                    list.pivot2data_sqrt = std::make_unique<float[]>(nb * pivot_m);
+                size_t desired_m = pivot_m ? pivot_m : static_cast<size_t>(std::round(std::max(1.0f, pivot_ratio * static_cast<float>(sub_k))));
+                size_t pivot_m_local = std::min(static_cast<size_t>(std::max<size_t>(1, desired_m)), nb);
+                list.pivot_m = pivot_m_local;
+                if (pivot_m_local > 0) {
+                    list.pivots = std::make_unique<float[]>(pivot_m_local * d);
+                    list.pivot2data_sqrt = std::make_unique<float[]>(nb * pivot_m_local);
+                    std::vector<size_t> debug_piv_idx; debug_piv_idx.reserve(pivot_m_local);
 
-                    // Farthest Point Sampling within this list
-                    std::vector<size_t> piv_idx(pivot_m, 0);
-                    // choose first pivot as the element closest to centroid
-                    size_t first = 0;
-                    float best_dis = std::numeric_limits<float>::max();
-                    for (size_t i = 0; i < nb; ++i) {
-                        float dis2 = calculatedEuclideanDistance(xb + i * d, centroid_code, d);
-                        if (dis2 < best_dis) {
-                            best_dis = dis2;
-                            first = i;
-                        }
-                    }
-                    piv_idx[0] = first;
-                    std::vector<float> min_d2(nb, std::numeric_limits<float>::max());
-                    for (size_t i = 0; i < nb; ++i) {
-                        float d2 = calculatedEuclideanDistance(xb + i * d, xb + piv_idx[0] * d, d);
-                        min_d2[i] = d2;
-                    }
-                    for (size_t m = 1; m < pivot_m; ++m) {
-                        size_t best_i = 0; float best_val = -1.0f;
+                    auto build_fps = [&]() {
+                        std::vector<size_t> piv_idx(pivot_m_local, 0);
+                        // seed: closest to centroid
+                        size_t first = 0;
+                        float best_dis = std::numeric_limits<float>::max();
                         for (size_t i = 0; i < nb; ++i) {
-                            float d2 = calculatedEuclideanDistance(xb + i * d, xb + piv_idx[m - 1] * d, d);
-                            if (d2 < min_d2[i]) min_d2[i] = d2;
-                            if (min_d2[i] > best_val) { best_val = min_d2[i]; best_i = i; }
+                            float dis2 = calculatedEuclideanDistance(xb + i * d, centroid_code, d);
+                            if (dis2 < best_dis) { best_dis = dis2; first = i; }
                         }
-                        piv_idx[m] = best_i;
+                        piv_idx[0] = first;
+                        std::vector<float> min_d2(nb, std::numeric_limits<float>::max());
+                        for (size_t i = 0; i < nb; ++i) {
+                            float d2 = calculatedEuclideanDistance(xb + i * d, xb + piv_idx[0] * d, d);
+                            min_d2[i] = d2;
+                        }
+                        for (size_t m = 1; m < pivot_m_local; ++m) {
+                            size_t best_i = 0; float best_val = -1.0f;
+                            for (size_t i = 0; i < nb; ++i) {
+                                float d2 = calculatedEuclideanDistance(xb + i * d, xb + piv_idx[m - 1] * d, d);
+                                if (d2 < min_d2[i]) min_d2[i] = d2;
+                                if (min_d2[i] > best_val) { best_val = min_d2[i]; best_i = i; }
+                            }
+                            piv_idx[m] = best_i;
+                        }
+                        for (size_t m = 0; m < pivot_m_local; ++m) {
+                            std::copy_n(xb + piv_idx[m] * d, d, list.pivots.get() + m * d);
+                        }
+                        debug_piv_idx = piv_idx;
+                    };
+
+                    auto build_fft = [&]() {
+                        std::vector<size_t> piv_idx(pivot_m_local, 0);
+                        // seed: farthest to centroid (与 FPS 的“最近质心”区分开)
+                        size_t first = 0;
+                        float worst_dis = -1.0f;
+                        for (size_t i = 0; i < nb; ++i) {
+                            float dis2 = calculatedEuclideanDistance(xb + i * d, centroid_code, d);
+                            if (dis2 > worst_dis) { worst_dis = dis2; first = i; }
+                        }
+                        piv_idx[0] = first;
+                        std::vector<float> min_d2(nb, std::numeric_limits<float>::max());
+                        for (size_t i = 0; i < nb; ++i) {
+                            float d2 = calculatedEuclideanDistance(xb + i * d, xb + piv_idx[0] * d, d);
+                            min_d2[i] = d2;
+                        }
+                        for (size_t m = 1; m < pivot_m_local; ++m) {
+                            size_t best_i = 0; float best_val = -1.0f;
+                            for (size_t i = 0; i < nb; ++i) {
+                                float d2 = calculatedEuclideanDistance(xb + i * d, xb + piv_idx[m - 1] * d, d);
+                                if (d2 < min_d2[i]) min_d2[i] = d2;
+                                if (min_d2[i] > best_val) { best_val = min_d2[i]; best_i = i; }
+                            }
+                            piv_idx[m] = best_i;
+                        }
+                        for (size_t m = 0; m < pivot_m_local; ++m) {
+                            std::copy_n(xb + piv_idx[m] * d, d, list.pivots.get() + m * d);
+                        }
+                        debug_piv_idx = piv_idx;
+                    };
+
+                    auto build_random = [&]() {
+                        std::vector<size_t> order(nb);
+                        std::iota(order.begin(), order.end(), 0);
+                        std::random_device rd;
+                        std::mt19937 rng(rd());
+                        std::shuffle(order.begin(), order.end(), rng);
+                        for (size_t m = 0; m < pivot_m_local; ++m) {
+                            std::copy_n(xb + order[m] * d, d, list.pivots.get() + m * d);
+                        }
+                        debug_piv_idx.assign(order.begin(), order.begin() + pivot_m_local);
+                    };
+
+                    switch (pivot_method) {
+                        case PivotMethod::PIVOT_FPS: build_fps(); break;
+                        case PivotMethod::PIVOT_FFT: build_fft(); break;
+                        case PivotMethod::PIVOT_RANDOM: build_random(); break;
+                        case PivotMethod::PIVOT_KMEANS: default: build_fps(); break;
                     }
-                    // write pivots
-                    for (size_t m = 0; m < pivot_m; ++m) {
-                        std::copy_n(xb + piv_idx[m] * d, d, list.pivots.get() + m * d);
-                    }
-                    // compute pivot2data_sqrt
+
                     for (size_t i = 0; i < nb; ++i) {
-                        for (size_t m = 0; m < pivot_m; ++m) {
+                        for (size_t m = 0; m < pivot_m_local; ++m) {
                             float d2 = calculatedEuclideanDistance(xb + i * d, list.pivots.get() + m * d, d);
-                            list.pivot2data_sqrt[i * pivot_m + m] = std::sqrt(d2);
+                            list.pivot2data_sqrt[i * pivot_m_local + m] = std::sqrt(d2);
+                        }
+                    }
+
+                    if (verbose && listid < 3) {
+                        auto method_name = [&](PivotMethod pm){
+                            switch (pm) { case PivotMethod::PIVOT_FPS: return "fps"; case PivotMethod::PIVOT_FFT: return "fft"; case PivotMethod::PIVOT_RANDOM: return "random"; case PivotMethod::PIVOT_KMEANS: return "kmeans"; default: return "unknown"; }
+                        };
+                        // 打印前两个 pivot 的原始数据索引与一个多维校验和（避免单维度为0导致误判）
+                        size_t idx0 = debug_piv_idx.size() > 0 ? debug_piv_idx[0] : (size_t)-1;
+                        size_t idx1 = debug_piv_idx.size() > 1 ? debug_piv_idx[1] : (size_t)-1;
+                        float checksum = 0.0f;
+                        size_t use_dims = std::min(d, static_cast<size_t>(16));
+                        if (pivot_m_local > 0) {
+                            const float* p0 = list.pivots.get();
+                            for (size_t kk = 0; kk < use_dims; ++kk) checksum += std::fabs(p0[kk]) * (kk + 1);
+                        }
+                        if (pivot_m_local > 1) {
+                            const float* p1 = list.pivots.get() + d;
+                            for (size_t kk = 0; kk < use_dims; ++kk) checksum += std::fabs(p1[kk]) * (kk + 17);
+                        }
+#pragma omp critical
+                        {
+                            std::cout << std::format("[pivot] list:{} method:{} m:{} idx0:{} idx1:{} checksum:{:.6f}", listid, method_name(pivot_method), pivot_m_local, idx0, idx1, checksum) << std::endl;
                         }
                     }
                 }
@@ -728,6 +803,9 @@ void Index::save_index(std::string path) const {
     out.write(reinterpret_cast<const char*>(&sub_k), sizeof(size_t));
     out.write(reinterpret_cast<const char*>(&sub_nlist), sizeof(size_t));
     out.write(reinterpret_cast<const char*>(&sub_nprobe), sizeof(size_t));
+    out.write(reinterpret_cast<const char*>(&pivot_m), sizeof(size_t));
+    out.write(reinterpret_cast<const char*>(&pivot_method), sizeof(PivotMethod));
+    out.write(reinterpret_cast<const char*>(&pivot_ratio), sizeof(float));
 
     out.write(reinterpret_cast<const char*>(centroid_codes.get()), nlist * d * sizeof(float));
     // out.write(reinterpret_cast<const char*>(centroid_ids.get()), nlist * sizeof(idx_t)); // 0 ~ nlist-1
@@ -754,6 +832,9 @@ void Index::load_index(std::string path) {
     in.read(reinterpret_cast<char*>(&sub_k), sizeof(size_t));
     in.read(reinterpret_cast<char*>(&sub_nlist), sizeof(size_t));
     in.read(reinterpret_cast<char*>(&sub_nprobe), sizeof(size_t));
+    in.read(reinterpret_cast<char*>(&pivot_m), sizeof(size_t));
+    in.read(reinterpret_cast<char*>(&pivot_method), sizeof(PivotMethod));
+    in.read(reinterpret_cast<char*>(&pivot_ratio), sizeof(float));
 
     centroid_codes = std::make_unique<float[]>(nlist * d);
     in.read(reinterpret_cast<char*>(centroid_codes.get()), nlist * d * sizeof(float));
