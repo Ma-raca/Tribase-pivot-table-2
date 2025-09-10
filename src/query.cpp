@@ -80,6 +80,14 @@ int main(int argc, char* argv[]) {
         .default_value(0ul)
         .action([](const std::string& value) -> size_t { return std::stoul(value); })
         .help("upper cap for preselected candidates; 0 means no cap");
+    program.add_argument("--pivot_pca_radius_alpha")
+        .default_value(20.0f)
+        .action([](const std::string& value) -> float { return std::stof(value); })
+        .help("radius R = alpha * sqrt(mean(||x-c||^2)) for PCA pivots");
+    program.add_argument("--pivot_pca_both_signs")
+        .default_value(true)
+        .implicit_value(true)
+        .help("whether to use both +R and -R directions for each principal axis");
     program.add_argument("--run_faiss").default_value(false).implicit_value(true).help("run faiss");
     program.add_argument("--loop").default_value(1ul).action(
         [](const std::string& value) -> size_t { return std::stoul(value); });
@@ -153,6 +161,8 @@ int main(int argc, char* argv[]) {
     size_t pivot_subset_size = program.get<size_t>("pivot_subset_size");
     float pivot_candidate_ratio = program.get<float>("pivot_candidate_ratio");
     size_t pivot_candidate_cap = program.get<size_t>("pivot_candidate_cap");
+    float pivot_pca_radius_alpha = program.get<float>("pivot_pca_radius_alpha");
+    bool pivot_pca_both_signs = program.get<bool>("pivot_pca_both_signs");
 
     std::string base_path = std::format("{}/{}/origin/{}_base.{}", benchmarks_path, dataset, dataset, input_format);
     std::string query_path = std::format("{}/{}/origin/{}_query.{}", benchmarks_path, dataset, dataset, input_format);
@@ -398,6 +408,8 @@ int main(int argc, char* argv[]) {
         index = Index(d, nlist, 0, metric, added_opt_levels, subk, sub_nlist, sub_nprobe, verbose,
                       EdgeDevice::EDGEDEVIVE_DISABLED, pivot_m, pivot_method, pivot_ratio,
                       pivot_subset_size, pivot_candidate_ratio, pivot_candidate_cap);
+        index.pca_radius_alpha = pivot_pca_radius_alpha;
+        index.pca_both_signs = pivot_pca_both_signs;
 
         auto build_start = std::chrono::high_resolution_clock::now();
         index.train(nb, base.get());

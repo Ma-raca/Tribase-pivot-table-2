@@ -573,10 +573,85 @@ void Index::add(size_t n, const float* codes) {
 
                     // 占位：PCA 与 VAR_ORTHO，先回退到 FPS，并在 verbose 下打印提示
                     auto build_pca = [&]() {
-                        if (verbose && listid < 3) {
-                            std::cout << "[pivot] method:pca not implemented yet, fallback to fps" << std::endl;
+                        // 1) compute centroid c
+                        std::vector<double> center(d, 0.0);
+                        for (size_t i = 0; i < nb; ++i) {
+                            const float* x = xb + i * d;
+                            for (size_t j = 0; j < d; ++j) center[j] += x[j];
                         }
-                        build_fps();
+                        for (size_t j = 0; j < d; ++j) center[j] /= static_cast<double>(nb);
+
+                        // 2) estimate scale S = sqrt(mean(||x-c||^2))
+                        double sum_norm2 = 0.0;
+                        for (size_t i = 0; i < nb; ++i) {
+                            const float* x = xb + i * d;
+                            double acc = 0.0; for (size_t j = 0; j < d; ++j) { double diff = x[j] - center[j]; acc += diff * diff; }
+                            sum_norm2 += acc;
+                        }
+                        double mean_norm2 = sum_norm2 / static_cast<double>(nb);
+                        double R = static_cast<double>(pca_radius_alpha) * std::sqrt(mean_norm2 + 1e-12);
+
+                        // 3) randomized power iteration to get top r principal axes
+                        size_t r = std::min(pivot_m_local, d);
+                        std::vector<std::vector<double>> axes; axes.reserve(r);
+                        std::mt19937 rng(6669);
+                        std::uniform_real_distribution<double> unif(-1.0, 1.0);
+                        auto matvec_cov = [&](const std::vector<double>& v, std::vector<double>& out){
+                            // out = (1/nb) * sum_i ( (x_i-c)^T v ) * (x_i-c)
+                            std::fill(out.begin(), out.end(), 0.0);
+                            for (size_t i = 0; i < nb; ++i) {
+                                const float* x = xb + i * d;
+                                double dot = 0.0; for (size_t j = 0; j < d; ++j) dot += (static_cast<double>(x[j]) - center[j]) * v[j];
+                                for (size_t j = 0; j < d; ++j) out[j] += (static_cast<double>(x[j]) - center[j]) * dot;
+                            }
+                            double inv_nb = 1.0 / static_cast<double>(nb);
+                            for (size_t j = 0; j < d; ++j) out[j] *= inv_nb;
+                        };
+
+                        std::vector<double> tmp(d), v(d);
+                        for (size_t kax = 0; kax < r; ++kax) {
+                            // init v
+                            for (size_t j = 0; j < d; ++j) v[j] = unif(rng);
+                            // orthogonalize against previous axes
+                            if (!axes.empty()) {
+                                for (auto& u : axes) {
+                                    double dot = 0.0; for (size_t j = 0; j < d; ++j) dot += v[j] * u[j];
+                                    for (size_t j = 0; j < d; ++j) v[j] -= dot * u[j];
+                                }
+                            }
+                            // power iterations
+                            for (int it = 0; it < 8; ++it) {
+                                matvec_cov(v, tmp);
+                                // orthogonalize and normalize
+                                if (!axes.empty()) {
+                                    for (auto& u : axes) {
+                                        double dot = 0.0; for (size_t j = 0; j < d; ++j) dot += tmp[j] * u[j];
+                                        for (size_t j = 0; j < d; ++j) tmp[j] -= dot * u[j];
+                                    }
+                                }
+                                double nrm = 0.0; for (size_t j = 0; j < d; ++j) nrm += tmp[j] * tmp[j];
+                                nrm = std::sqrt(nrm + 1e-18);
+                                for (size_t j = 0; j < d; ++j) v[j] = tmp[j] / nrm;
+                            }
+                            // finalize axis v (unit)
+                            axes.push_back(v);
+                        }
+
+                        // 4) synthesize pivots with equal radius R, using ± if enabled
+                        size_t filled = 0;
+                        for (size_t ai = 0; ai < axes.size() && filled < pivot_m_local; ++ai) {
+                            const auto& u = axes[ai];
+                            // +R
+                            for (size_t j = 0; j < d; ++j) list.pivots.get()[filled * d + j] = static_cast<float>(center[j] + R * u[j]);
+                            debug_piv_idx.push_back(static_cast<size_t>(-1));
+                            filled++;
+                            if (filled >= pivot_m_local) break;
+                            if (pca_both_signs) {
+                                for (size_t j = 0; j < d; ++j) list.pivots.get()[filled * d + j] = static_cast<float>(center[j] - R * u[j]);
+                                debug_piv_idx.push_back(static_cast<size_t>(-1));
+                                filled++;
+                            }
+                        }
                     };
                     auto build_var_ortho = [&]() {
                         // Parameters

@@ -67,6 +67,10 @@ class Index {
     float pivot_candidate_ratio = 4.0f; // 预筛候选列数 = ceil(ratio * pivot_m)
     size_t pivot_candidate_cap = 0;     // 0 表示不限制
 
+    // PCA params
+    float pca_radius_alpha = 20.0f;     // R = alpha * sqrt(mean(||x-c||^2))
+    bool pca_both_signs = true;         // 生成 ±R·u_i
+
     bool verbose;
     EdgeDevice edge_device_enabled;
 
