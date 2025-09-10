@@ -19,8 +19,8 @@
 
 namespace tribase {
 
-Index::Index(size_t d, size_t nlist, size_t nprobe, MetricType metric, OptLevel opt_level, size_t sub_k, size_t sub_nlist, size_t sub_nprobe, bool verbose, EdgeDevice edge_device_enabled, size_t pivot_m, PivotMethod pivot_method, float pivot_ratio)
-    : d(d), nlist(nlist), nprobe(nprobe), metric(metric), opt_level(opt_level), sub_k(sub_k), sub_nlist(sub_nlist), sub_nprobe(sub_nprobe), verbose(verbose), edge_device_enabled(edge_device_enabled), pivot_m(pivot_m), pivot_method(pivot_method), pivot_ratio(pivot_ratio) {
+Index::Index(size_t d, size_t nlist, size_t nprobe, MetricType metric, OptLevel opt_level, size_t sub_k, size_t sub_nlist, size_t sub_nprobe, bool verbose, EdgeDevice edge_device_enabled, size_t pivot_m, PivotMethod pivot_method, float pivot_ratio, size_t pivot_subset_size, float pivot_candidate_ratio, size_t pivot_candidate_cap)
+    : d(d), nlist(nlist), nprobe(nprobe), metric(metric), opt_level(opt_level), sub_k(sub_k), sub_nlist(sub_nlist), sub_nprobe(sub_nprobe), verbose(verbose), edge_device_enabled(edge_device_enabled), pivot_m(pivot_m), pivot_method(pivot_method), pivot_ratio(pivot_ratio), pivot_subset_size(pivot_subset_size), pivot_candidate_ratio(pivot_candidate_ratio), pivot_candidate_cap(pivot_candidate_cap) {
     lists = std::make_unique<IVF[]>(nlist);
     centroid_codes = std::make_unique<float[]>(nlist * d);
     centroid_ids = std::make_unique<idx_t[]>(nlist);
@@ -42,6 +42,9 @@ Index& Index::operator=(Index&& other) noexcept {
     pivot_m = other.pivot_m;
     pivot_method = other.pivot_method;
     pivot_ratio = other.pivot_ratio;
+    pivot_subset_size = other.pivot_subset_size;
+    pivot_candidate_ratio = other.pivot_candidate_ratio;
+    pivot_candidate_cap = other.pivot_candidate_cap;
     lists = std::move(other.lists);
     centroid_codes = std::move(other.centroid_codes);
     centroid_ids = std::move(other.centroid_ids);
@@ -568,10 +571,139 @@ void Index::add(size_t n, const float* codes) {
                         debug_piv_idx.assign(order.begin(), order.begin() + pivot_m_local);
                     };
 
+                    // 占位：PCA 与 VAR_ORTHO，先回退到 FPS，并在 verbose 下打印提示
+                    auto build_pca = [&]() {
+                        if (verbose && listid < 3) {
+                            std::cout << "[pivot] method:pca not implemented yet, fallback to fps" << std::endl;
+                        }
+                        build_fps();
+                    };
+                    auto build_var_ortho = [&]() {
+                        // Parameters
+                        size_t s = (pivot_subset_size == 0) ? nb : std::min(pivot_subset_size, nb);
+                        size_t target_k = pivot_m_local;
+                        size_t mprime = std::max(target_k, static_cast<size_t>(std::ceil(pivot_candidate_ratio * static_cast<float>(target_k))));
+                        if (pivot_candidate_cap > 0) mprime = std::min(mprime, pivot_candidate_cap);
+                        mprime = std::min(mprime, nb);
+
+                        // Row sampling (full by default)
+                        std::vector<size_t> row_indices;
+                        row_indices.reserve(s);
+                        if (s == nb) {
+                            row_indices.resize(s);
+                            std::iota(row_indices.begin(), row_indices.end(), 0);
+                        } else {
+                            std::vector<size_t> all_idx(nb);
+                            std::iota(all_idx.begin(), all_idx.end(), 0);
+                            std::random_device rd;
+                            std::mt19937 rng(rd());
+                            std::shuffle(all_idx.begin(), all_idx.end(), rng);
+                            row_indices.assign(all_idx.begin(), all_idx.begin() + s);
+                        }
+
+                        // Preselect candidate pivots by FFT over the list
+                        std::vector<size_t> candidate_indices;
+                        candidate_indices.reserve(mprime);
+                        // seed: farthest to centroid
+                        size_t seed = 0; float worst_dis = -1.0f;
+                        for (size_t i = 0; i < nb; ++i) {
+                            float d2 = calculatedEuclideanDistance(xb + i * d, centroid_code, d);
+                            if (d2 > worst_dis) { worst_dis = d2; seed = i; }
+                        }
+                        candidate_indices.push_back(seed);
+                        if (mprime > 1) {
+                            std::vector<float> min_d2(nb, std::numeric_limits<float>::max());
+                            for (size_t i = 0; i < nb; ++i) {
+                                float d2 = calculatedEuclideanDistance(xb + i * d, xb + seed * d, d);
+                                min_d2[i] = d2;
+                            }
+                            while (candidate_indices.size() < mprime) {
+                                size_t last = candidate_indices.back();
+                                for (size_t i = 0; i < nb; ++i) {
+                                    float d2 = calculatedEuclideanDistance(xb + i * d, xb + last * d, d);
+                                    if (d2 < min_d2[i]) min_d2[i] = d2;
+                                }
+                                size_t best_i = 0; float best_val = -1.0f;
+                                for (size_t i = 0; i < nb; ++i) {
+                                    if (min_d2[i] > best_val) { best_val = min_d2[i]; best_i = i; }
+                                }
+                                candidate_indices.push_back(best_i);
+                            }
+                        }
+
+                        // Build pivot-space current_space (s x mprime) row-major: [r * mprime + c]
+                        std::vector<float> current_space(s * mprime, 0.0f);
+                        for (size_t ci = 0; ci < mprime; ++ci) {
+                            const float* pivot_code = xb + candidate_indices[ci] * d;
+                            for (size_t rr = 0; rr < s; ++rr) {
+                                const float* row_code = xb + row_indices[rr] * d;
+                                float d2 = calculatedEuclideanDistance(row_code, pivot_code, d);
+                                current_space[rr * mprime + ci] = std::sqrt(d2);
+                            }
+                        }
+
+                        // Greedy selection with incremental Gram-Schmidt orthogonalization
+                        std::vector<size_t> remaining(mprime);
+                        std::iota(remaining.begin(), remaining.end(), 0);
+                        std::vector<size_t> selected_local;
+                        selected_local.reserve(target_k);
+
+                        auto column_variance = [&](size_t col)->float {
+                            double sum = 0.0, sum2 = 0.0;
+                            for (size_t rr = 0; rr < s; ++rr) {
+                                float v = current_space[rr * mprime + col];
+                                sum += v; sum2 += static_cast<double>(v) * v;
+                            }
+                            double mean = sum / static_cast<double>(s);
+                            double var = sum2 / static_cast<double>(s) - mean * mean;
+                            return static_cast<float>(var < 0 ? 0 : var);
+                        };
+
+                        for (size_t it = 0; it < target_k && !remaining.empty(); ++it) {
+                            // pick max-variance column among remaining
+                            size_t best_pos = 0; float best_var = -1.0f;
+                            for (size_t pos = 0; pos < remaining.size(); ++pos) {
+                                float var = column_variance(remaining[pos]);
+                                if (var > best_var) { best_var = var; best_pos = pos; }
+                            }
+                            size_t best_col = remaining[best_pos];
+                            selected_local.push_back(best_col);
+                            remaining.erase(remaining.begin() + best_pos);
+
+                            if (remaining.empty()) break;
+
+                            // Incremental orthogonalization by new basis vector
+                            std::vector<float> basis_vec(s);
+                            for (size_t rr = 0; rr < s; ++rr) basis_vec[rr] = current_space[rr * mprime + best_col];
+                            double norm_sq = 0.0; for (float v : basis_vec) norm_sq += static_cast<double>(v) * v;
+                            if (norm_sq < 1e-12) continue;
+                            double inv_norm_sq = 1.0 / norm_sq;
+                            for (size_t pos = 0; pos < remaining.size(); ++pos) {
+                                size_t col = remaining[pos];
+                                double dot = 0.0;
+                                for (size_t rr = 0; rr < s; ++rr) dot += static_cast<double>(basis_vec[rr]) * current_space[rr * mprime + col];
+                                double coeff = dot * inv_norm_sq;
+                                for (size_t rr = 0; rr < s; ++rr) current_space[rr * mprime + col] -= static_cast<float>(coeff * basis_vec[rr]);
+                            }
+                        }
+
+                        // Materialize selected pivots
+                        size_t sel = std::min(target_k, selected_local.size());
+                        debug_piv_idx.clear(); debug_piv_idx.reserve(sel);
+                        for (size_t m = 0; m < sel; ++m) {
+                            size_t cand_col = selected_local[m];
+                            size_t real_idx = candidate_indices[cand_col];
+                            debug_piv_idx.push_back(real_idx);
+                            std::copy_n(xb + real_idx * d, d, list.pivots.get() + m * d);
+                        }
+                    };
+
                     switch (pivot_method) {
                         case PivotMethod::PIVOT_FPS: build_fps(); break;
                         case PivotMethod::PIVOT_FFT: build_fft(); break;
                         case PivotMethod::PIVOT_RANDOM: build_random(); break;
+                        case PivotMethod::PIVOT_PCA: build_pca(); break;
+                        case PivotMethod::PIVOT_VAR_ORTHO: build_var_ortho(); break;
                         case PivotMethod::PIVOT_KMEANS: default: build_fps(); break;
                     }
 
@@ -806,6 +938,9 @@ void Index::save_index(std::string path) const {
     out.write(reinterpret_cast<const char*>(&pivot_m), sizeof(size_t));
     out.write(reinterpret_cast<const char*>(&pivot_method), sizeof(PivotMethod));
     out.write(reinterpret_cast<const char*>(&pivot_ratio), sizeof(float));
+    out.write(reinterpret_cast<const char*>(&pivot_subset_size), sizeof(size_t));
+    out.write(reinterpret_cast<const char*>(&pivot_candidate_ratio), sizeof(float));
+    out.write(reinterpret_cast<const char*>(&pivot_candidate_cap), sizeof(size_t));
 
     out.write(reinterpret_cast<const char*>(centroid_codes.get()), nlist * d * sizeof(float));
     // out.write(reinterpret_cast<const char*>(centroid_ids.get()), nlist * sizeof(idx_t)); // 0 ~ nlist-1
@@ -835,6 +970,9 @@ void Index::load_index(std::string path) {
     in.read(reinterpret_cast<char*>(&pivot_m), sizeof(size_t));
     in.read(reinterpret_cast<char*>(&pivot_method), sizeof(PivotMethod));
     in.read(reinterpret_cast<char*>(&pivot_ratio), sizeof(float));
+    in.read(reinterpret_cast<char*>(&pivot_subset_size), sizeof(size_t));
+    in.read(reinterpret_cast<char*>(&pivot_candidate_ratio), sizeof(float));
+    in.read(reinterpret_cast<char*>(&pivot_candidate_cap), sizeof(size_t));
 
     centroid_codes = std::make_unique<float[]>(nlist * d);
     in.read(reinterpret_cast<char*>(centroid_codes.get()), nlist * d * sizeof(float));

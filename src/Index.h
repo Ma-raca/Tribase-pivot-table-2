@@ -23,7 +23,10 @@ class Index {
           EdgeDevice edge_device_enabled = EdgeDevice::EDGEDEVIVE_DISABLED,
           size_t pivot_m = 0,
           PivotMethod pivot_method = PivotMethod::PIVOT_FPS,
-          float pivot_ratio = 1.0f);
+          float pivot_ratio = 1.0f,
+          size_t pivot_subset_size = 0,
+          float pivot_candidate_ratio = 4.0f,
+          size_t pivot_candidate_cap = 0);
 
     Index& operator=(Index&& other) noexcept;
 
@@ -60,6 +63,9 @@ class Index {
     size_t pivot_m = 0;            // 0 表示使用 sub_k 或由 pivot_ratio 推导
     PivotMethod pivot_method = PivotMethod::PIVOT_FPS;
     float pivot_ratio = 1.0f;      // 当 pivot_m==0 时，可用 ratio*sub_k 推导
+    size_t pivot_subset_size = 0;  // 0 表示使用 list_size 全量
+    float pivot_candidate_ratio = 4.0f; // 预筛候选列数 = ceil(ratio * pivot_m)
+    size_t pivot_candidate_cap = 0;     // 0 表示不限制
 
     bool verbose;
     EdgeDevice edge_device_enabled;

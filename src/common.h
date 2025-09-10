@@ -41,10 +41,12 @@ enum EdgeDevice {
 
 // Pivot selection methods
 enum PivotMethod {
-    PIVOT_FPS = 0,     // farthest point sampling (默认)
-    PIVOT_FFT = 1,     // farthest first traversal
-    PIVOT_RANDOM = 2,  // random sampling
-    PIVOT_KMEANS = 3   // k-means centroids (占位，暂未实现专用路径)
+    PIVOT_FPS = 0,       // farthest point sampling (默认)
+    PIVOT_FFT = 1,       // farthest first traversal
+    PIVOT_RANDOM = 2,    // random sampling
+    PIVOT_KMEANS = 3,    // k-means centroids (占位)
+    PIVOT_PCA = 4,       // principal component analysis based (占位)
+    PIVOT_VAR_ORTHO = 5  // max-variance with Schmidt orthogonalization (占位)
 };
 
 inline PivotMethod str2PivotMethod(const std::string& str) {
@@ -54,7 +56,21 @@ inline PivotMethod str2PivotMethod(const std::string& str) {
     if (lower == "fft") return PivotMethod::PIVOT_FFT;
     if (lower == "random" || lower == "rand") return PivotMethod::PIVOT_RANDOM;
     if (lower == "kmeans" || lower == "k-means") return PivotMethod::PIVOT_KMEANS;
+    if (lower == "pca") return PivotMethod::PIVOT_PCA;
+    if (lower == "var_ortho" || lower == "variance_orthogonal" || lower == "mvso") return PivotMethod::PIVOT_VAR_ORTHO;
     return PivotMethod::PIVOT_FPS;
+}
+
+inline std::string pivotMethodToString(PivotMethod m) {
+    switch (m) {
+        case PIVOT_FPS: return "fps";
+        case PIVOT_FFT: return "fft";
+        case PIVOT_RANDOM: return "random";
+        case PIVOT_KMEANS: return "kmeans";
+        case PIVOT_PCA: return "pca";
+        case PIVOT_VAR_ORTHO: return "var_ortho";
+        default: return "unknown";
+    }
 }
 
 inline bool isLegalOptLevel(int opt) {
