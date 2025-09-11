@@ -105,6 +105,12 @@ int main(int argc, char* argv[]) {
         .default_value(false)
         .implicit_value(true);
     program.add_argument("--early_stop").help("early stop").default_value(false).implicit_value(true);
+    // cluster-level pruning switch (L2 only)
+    program.add_argument("--cluster_prune").default_value(false).implicit_value(true).help("enable cluster-level pruning (L2)");
+    program.add_argument("--cluster_prune_beta")
+        .default_value(0.98f)
+        .action([](const std::string& value) -> float { return std::stof(value); })
+        .help("conservative factor beta for cluster pruning (use beta*sqrt(thr)");
 
     try {
         program.parse_args(argc, argv);
@@ -139,6 +145,8 @@ int main(int argc, char* argv[]) {
     size_t nlist = program.get<size_t>("nlist");
     bool verbose = program.get<bool>("verbose");
     bool early_stop = program.get<bool>("early_stop");
+    bool cluster_prune = program.get<bool>("cluster_prune");
+    float cluster_prune_beta = program.get<float>("cluster_prune_beta");
 
     if (early_stop && (ratios[0] != 1 || ratios.size() != 1)) {
         throw std::invalid_argument("early_stop is only allowed when ratios is 1.0");
@@ -410,6 +418,8 @@ int main(int argc, char* argv[]) {
                       pivot_subset_size, pivot_candidate_ratio, pivot_candidate_cap);
         index.pca_radius_alpha = pivot_pca_radius_alpha;
         index.pca_both_signs = pivot_pca_both_signs;
+        index.cluster_prune = cluster_prune;
+        index.cluster_prune_beta = cluster_prune_beta;
 
         auto build_start = std::chrono::high_resolution_clock::now();
         index.train(nb, base.get());

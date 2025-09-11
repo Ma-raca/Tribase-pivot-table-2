@@ -1,5 +1,5 @@
 #include "IVF.h"
-#include <iostream>
+#include <iostream> 
 
 namespace tribase {
 IVF::IVF(size_t listSize, size_t d, size_t subK, OptLevel optLevel) {
@@ -109,6 +109,9 @@ void IVF::save_IVF(std::ostream& os) const {
             os.write(reinterpret_cast<const char*>(pivot2data_sqrt.get()), list_size * pivot_m * sizeof(float));
         }
     }
+    // Save cluster radii (sqrt L2)
+    os.write(reinterpret_cast<const char*>(&r_min_sqrt), sizeof(float));
+    os.write(reinterpret_cast<const char*>(&r_max_sqrt), sizeof(float));
 }
 
 void IVF::load_IVF(std::istream& is) {
@@ -154,6 +157,9 @@ void IVF::load_IVF(std::istream& is) {
             is.read(reinterpret_cast<char*>(pivot2data_sqrt.get()), list_size * pivot_m * sizeof(float));
         }
     }
+    // Load cluster radii (sqrt L2)
+    is.read(reinterpret_cast<char*>(&r_min_sqrt), sizeof(float));
+    is.read(reinterpret_cast<char*>(&r_max_sqrt), sizeof(float));
 }
 
 }  // namespace tribase

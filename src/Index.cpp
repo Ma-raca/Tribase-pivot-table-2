@@ -788,6 +788,15 @@ void Index::add(size_t n, const float* codes) {
                             list.pivot2data_sqrt[i * pivot_m_local + m] = std::sqrt(d2);
                         }
                     }
+                    // compute cluster radii r_min/r_max in sqrt L2 to centroid
+                    float rmin = std::numeric_limits<float>::infinity();
+                    float rmax = 0.0f;
+                    for (size_t i = 0; i < nb; ++i) {
+                        float rc = std::sqrt(calculatedEuclideanDistance(xb + i * d, centroid_code, d));
+                        rmin = std::min(rmin, rc);
+                        rmax = std::max(rmax, rc);
+                    }
+                    list.set_radii_sqrt(rmin, rmax);
 
                     if (verbose && listid < 3) {
                         auto method_name = [&](PivotMethod pm){
@@ -812,6 +821,18 @@ void Index::add(size_t n, const float* codes) {
                         }
                     }
                 }
+            }
+
+            // Always compute cluster radii r_min/r_max (sqrt L2) to enable cluster-level pruning
+            {
+                float rmin = std::numeric_limits<float>::infinity();
+                float rmax = 0.0f;
+                for (size_t i = 0; i < nb; ++i) {
+                    float rc = std::sqrt(calculatedEuclideanDistance(xb + i * d, centroid_code, d));
+                    rmin = std::min(rmin, rc);
+                    rmax = std::max(rmax, rc);
+                }
+                list.set_radii_sqrt(rmin, rmax);
             }
 
 #pragma omp critical
@@ -859,6 +880,17 @@ void Index::single_thread_search(size_t n, const float* queries, size_t k, float
                 IVF& list = lists[listids[j]];
                 float centroid2query = centroids2query[j];
                 size_t list_size = list.get_list_size();
+                // cluster-level pruning (L2): use sqrt distances
+                if (list_size > 0 && cluster_prune) {
+                    float a = std::sqrt(centroid2query);
+                    float thr_s = std::sqrt(ratio * simi[0]);
+                    thr_s = cluster_prune_beta * thr_s;
+                    float rmin = list.get_r_min_sqrt();
+                    float rmax = list.get_r_max_sqrt();
+                    if (a > rmax + thr_s || a + thr_s < rmin) {
+                        continue; // skip entire cluster
+                    }
+                }
 
                 std::unique_ptr<bool[]> if_skip = std::make_unique<bool[]>(list_size + 1);
 

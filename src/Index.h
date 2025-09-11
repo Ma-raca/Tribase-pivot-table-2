@@ -71,6 +71,10 @@ class Index {
     float pca_radius_alpha = 20.0f;     // R = alpha * sqrt(mean(||x-c||^2))
     bool pca_both_signs = true;         // 生成 ±R·u_i
 
+    // Cluster-level pruning (L2) switch & params
+    bool cluster_prune = false;
+    float cluster_prune_beta = 0.98f;
+
     bool verbose;
     EdgeDevice edge_device_enabled;
 

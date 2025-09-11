@@ -31,6 +31,10 @@ class IVF {
     std::unique_ptr<float[]> pivots;            // [pivot_m, d]
     std::unique_ptr<float[]> pivot2data_sqrt;   // [list_size, pivot_m] sqrt(L2)
 
+    // Cluster-level radii (sqrt L2 to centroid): min/max over this list
+    float r_min_sqrt = 0.0f;
+    float r_max_sqrt = 0.0f;
+
    public:
     // Constructor
     IVF(size_t listSize = 0, size_t d = 0, size_t subK = 0, OptLevel optLevel = OptLevel::OPT_ALL);
@@ -83,6 +87,11 @@ class IVF {
     const float* get_pivot_ptr(size_t k) const { return pivots.get() + k * d; }
     const float* get_pivot2data_sqrt() const { return pivot2data_sqrt.get(); }
     float get_pivot2data_sqrt(size_t i, size_t k) const { return pivot2data_sqrt[i * pivot_m + k]; }
+
+    // Cluster radii accessors
+    float get_r_min_sqrt() const { return r_min_sqrt; }
+    float get_r_max_sqrt() const { return r_max_sqrt; }
+    void set_radii_sqrt(float rmin, float rmax) { r_min_sqrt = rmin; r_max_sqrt = rmax; }
 };
 }  // namespace tribase
 
