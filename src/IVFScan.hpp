@@ -254,6 +254,7 @@ class IVFScan : public IVFScanBase {
             for (size_t pk = 0; pk < pivot_m; ++pk) {
                 float d2 = calculatedEuclideanDistance(query, pivots + pk * d, d);
                 d_qp[pk] = std::sqrt(d2);
+                IF_STATS { stats->dis_calls_qp += 1; }
             }
         }
 
@@ -291,6 +292,7 @@ class IVFScan : public IVFScanBase {
 #else
                 dis = dis_calculator(query, candicate, d);
 #endif
+                IF_STATS { stats->dis_calls_qx += 1; }
                 // dis = calculatedEuclideanDistance(query, candicate, query_norm, d);
                 // const float candicate_norm = codes_norms[i];
                 // dis = calculatedEuclideanDistance(query, candicate, query_norm, candicate_norm, d);

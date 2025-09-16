@@ -57,9 +57,40 @@ inline PivotMethod str2PivotMethod(const std::string& str) {
     if (lower == "random" || lower == "rand") return PivotMethod::PIVOT_RANDOM;
     if (lower == "kmeans" || lower == "k-means") return PivotMethod::PIVOT_KMEANS;
     if (lower == "pca") return PivotMethod::PIVOT_PCA;
-    if (lower == "var_ortho" || lower == "variance_orthogonal" || lower == "mvso") return PivotMethod::PIVOT_VAR_ORTHO;
+    if (lower == "var_ortho" || lower == "var_orthr" || lower == "mvoa" || lower == "variance_orthogonal" || lower == "mvso") return PivotMethod::PIVOT_VAR_ORTHO;
     return PivotMethod::PIVOT_FPS;
 }
+
+// Pivot scope for MVOA candidate pool
+enum PivotScope {
+    PIVOT_SCOPE_INTRA = 0,   // only current cluster
+    PIVOT_SCOPE_INTER = 1,   // only other clusters (cross-cluster)
+    PIVOT_SCOPE_HYBRID = 2   // mix of current + other clusters
+};
+
+inline PivotScope str2PivotScope(const std::string& s) {
+    std::string lower = s;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c){ return std::tolower(c); });
+    if (lower == "intra" || lower == "internal" || lower == "self") return PIVOT_SCOPE_INTRA;
+    if (lower == "inter" || lower == "external" || lower == "cross") return PIVOT_SCOPE_INTER;
+    if (lower == "hybrid" || lower == "mixed") return PIVOT_SCOPE_HYBRID;
+    return PIVOT_SCOPE_INTRA;
+}
+
+// Intra candidate sampling method for MVOA
+enum PivotIntraMethod {
+    INTRA_FFT = 0,
+    INTRA_FPS = 1
+};
+
+inline PivotIntraMethod str2PivotIntraMethod(const std::string& s) {
+    std::string lower = s;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c){ return std::tolower(c); });
+    if (lower == "fft") return INTRA_FFT;
+    if (lower == "fps") return INTRA_FPS;
+    return INTRA_FFT;
+}
+
 
 inline std::string pivotMethodToString(PivotMethod m) {
     switch (m) {

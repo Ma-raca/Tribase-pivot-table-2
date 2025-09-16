@@ -8,6 +8,8 @@
 #include <vector>
 #include <limits>
 #include <memory>
+#include <random>
+#include <unordered_set>
 #include "IVF.h"
 #include "IVFScan.hpp"
 #include "heap.hpp"
@@ -45,6 +47,16 @@ Index& Index::operator=(Index&& other) noexcept {
     pivot_subset_size = other.pivot_subset_size;
     pivot_candidate_ratio = other.pivot_candidate_ratio;
     pivot_candidate_cap = other.pivot_candidate_cap;
+    // PCA & cluster prune
+    pca_radius_alpha = other.pca_radius_alpha;
+    pca_both_signs = other.pca_both_signs;
+    cluster_prune = other.cluster_prune;
+    cluster_prune_beta = other.cluster_prune_beta;
+    // MVOA scope
+    pivot_scope = other.pivot_scope;
+    pivot_intra_method = other.pivot_intra_method;
+    pivot_cross_k = other.pivot_cross_k;
+    pivot_cross_per_cluster = other.pivot_cross_per_cluster;
     lists = std::move(other.lists);
     centroid_codes = std::move(other.centroid_codes);
     centroid_ids = std::move(other.centroid_ids);
@@ -657,9 +669,8 @@ void Index::add(size_t n, const float* codes) {
                         // Parameters
                         size_t s = (pivot_subset_size == 0) ? nb : std::min(pivot_subset_size, nb);
                         size_t target_k = pivot_m_local;
-                        size_t mprime = std::max(target_k, static_cast<size_t>(std::ceil(pivot_candidate_ratio * static_cast<float>(target_k))));
-                        if (pivot_candidate_cap > 0) mprime = std::min(mprime, pivot_candidate_cap);
-                        mprime = std::min(mprime, nb);
+                        size_t mprime_desired = std::max(target_k, static_cast<size_t>(std::ceil(pivot_candidate_ratio * static_cast<float>(target_k))));
+                        if (pivot_candidate_cap > 0) mprime_desired = std::min(mprime_desired, pivot_candidate_cap);
 
                         // Row sampling (full by default)
                         std::vector<size_t> row_indices;
@@ -676,40 +687,130 @@ void Index::add(size_t n, const float* codes) {
                             row_indices.assign(all_idx.begin(), all_idx.begin() + s);
                         }
 
-                        // Preselect candidate pivots by FFT over the list
-                        std::vector<size_t> candidate_indices;
-                        candidate_indices.reserve(mprime);
-                        // seed: farthest to centroid
-                        size_t seed = 0; float worst_dis = -1.0f;
-                        for (size_t i = 0; i < nb; ++i) {
-                            float d2 = calculatedEuclideanDistance(xb + i * d, centroid_code, d);
-                            if (d2 > worst_dis) { worst_dis = d2; seed = i; }
+                        // 组建候选池：根据 pivot_scope 汇合 本簇(FFT/FPS) + 最远外簇随机样本
+                        std::vector<const float*> cand_ptrs;
+                        cand_ptrs.reserve(mprime_desired + 16);
+                        std::vector<size_t> cand_dbg_idx; // 仅用于调试
+
+                        auto gather_intra = [&](){
+                            // 生成一个顺序，依据 intra_method 选择策略
+                            std::vector<size_t> order;
+                            order.reserve(nb);
+                            if (pivot_intra_method == PivotIntraMethod::INTRA_FFT) {
+                                // seed: farthest to centroid
+                                size_t seed = 0; float worst_dis = -1.0f;
+                                for (size_t i = 0; i < nb; ++i) {
+                                    float d2 = calculatedEuclideanDistance(xb + i * d, centroid_code, d);
+                                    if (d2 > worst_dis) { worst_dis = d2; seed = i; }
+                                }
+                                order.push_back(seed);
+                                std::vector<float> min_d2(nb, std::numeric_limits<float>::max());
+                                for (size_t i = 0; i < nb; ++i) {
+                                    float d2 = calculatedEuclideanDistance(xb + i * d, xb + seed * d, d);
+                                    min_d2[i] = d2;
+                                }
+                                while (order.size() < nb) {
+                                    size_t last = order.back();
+                                    for (size_t i = 0; i < nb; ++i) {
+                                        float d2 = calculatedEuclideanDistance(xb + i * d, xb + last * d, d);
+                                        if (d2 < min_d2[i]) min_d2[i] = d2;
+                                    }
+                                    size_t best_i = 0; float best_val = -1.0f;
+                                    for (size_t i = 0; i < nb; ++i) {
+                                        if (min_d2[i] > best_val) { best_val = min_d2[i]; best_i = i; }
+                                    }
+                                    if (std::find(order.begin(), order.end(), best_i) != order.end()) break;
+                                    order.push_back(best_i);
+                                    if (order.size() >= mprime_desired) break;
+                                }
+                            } else { // INTRA_FPS
+                                // seed: closest to centroid
+                                size_t seed = 0; float best_dis = std::numeric_limits<float>::max();
+                                for (size_t i = 0; i < nb; ++i) {
+                                    float d2 = calculatedEuclideanDistance(xb + i * d, centroid_code, d);
+                                    if (d2 < best_dis) { best_dis = d2; seed = i; }
+                                }
+                                order.push_back(seed);
+                                std::vector<float> min_d2(nb, std::numeric_limits<float>::max());
+                                for (size_t i = 0; i < nb; ++i) {
+                                    float d2 = calculatedEuclideanDistance(xb + i * d, xb + seed * d, d);
+                                    min_d2[i] = d2;
+                                }
+                                while (order.size() < nb) {
+                                    size_t last = order.back();
+                                    for (size_t i = 0; i < nb; ++i) {
+                                        float d2 = calculatedEuclideanDistance(xb + i * d, xb + last * d, d);
+                                        if (d2 < min_d2[i]) min_d2[i] = d2;
+                                    }
+                                    size_t best_i = 0; float best_val = -1.0f;
+                                    for (size_t i = 0; i < nb; ++i) {
+                                        if (min_d2[i] > best_val) { best_val = min_d2[i]; best_i = i; }
+                                    }
+                                    if (std::find(order.begin(), order.end(), best_i) != order.end()) break;
+                                    order.push_back(best_i);
+                                    if (order.size() >= mprime_desired) break;
+                                }
+                            }
+                            size_t limit = std::min(mprime_desired, order.size());
+                            for (size_t t = 0; t < limit; ++t) {
+                                cand_ptrs.push_back(xb + order[t] * d);
+                                cand_dbg_idx.push_back(order[t]);
+                            }
+                        };
+
+                        auto gather_inter = [&](){
+                            // 计算与其他簇质心的距离，取最远 pivot_cross_k 个
+                            std::vector<std::pair<float, size_t>> dist_cid; dist_cid.reserve(nlist);
+                            for (size_t cid = 0; cid < nlist; ++cid) {
+                                if (cid == listid) continue;
+                                float d2 = calculatedEuclideanDistance(centroid_code, centroid_codes.get() + cid * d, d);
+                                dist_cid.emplace_back(d2, cid);
+                            }
+                            std::sort(dist_cid.begin(), dist_cid.end(), [](const auto& a, const auto& b){ return a.first > b.first; });
+                            size_t take_k = std::min(pivot_cross_k, dist_cid.size());
+                            std::mt19937 rng(static_cast<uint32_t>(1467u + listid));
+                            for (size_t t = 0; t < take_k; ++t) {
+                                size_t cid = dist_cid[t].second;
+                                IVF& ext = lists[cid];
+                                size_t ext_nb = ext.get_list_size();
+                                if (ext_nb == 0) continue;
+                                size_t per = std::min(pivot_cross_per_cluster, ext_nb);
+                                std::uniform_int_distribution<size_t> uni(0, ext_nb - 1);
+                                // 简单去重
+                                std::unordered_set<size_t> used;
+                                used.reserve(per * 2 + 1);
+                                for (size_t sidx = 0; sidx < per; ++sidx) {
+                                    size_t ridx = uni(rng);
+                                    int guard = 0;
+                                    while (used.count(ridx) && guard < 8) { ridx = uni(rng); guard++; }
+                                    used.insert(ridx);
+                                    cand_ptrs.push_back(ext.get_candidate_codes() + ridx * d);
+                                    cand_dbg_idx.push_back(static_cast<size_t>(-1));
+                                    if (cand_ptrs.size() >= mprime_desired * 2) break; // 防止过大
+                                }
+                                if (cand_ptrs.size() >= mprime_desired * 2) break;
+                            }
+                        };
+
+                        if (pivot_scope == PivotScope::PIVOT_SCOPE_INTRA || pivot_scope == PivotScope::PIVOT_SCOPE_HYBRID) {
+                            gather_intra();
                         }
-                        candidate_indices.push_back(seed);
-                        if (mprime > 1) {
-                            std::vector<float> min_d2(nb, std::numeric_limits<float>::max());
-                            for (size_t i = 0; i < nb; ++i) {
-                                float d2 = calculatedEuclideanDistance(xb + i * d, xb + seed * d, d);
-                                min_d2[i] = d2;
-                            }
-                            while (candidate_indices.size() < mprime) {
-                                size_t last = candidate_indices.back();
-                                for (size_t i = 0; i < nb; ++i) {
-                                    float d2 = calculatedEuclideanDistance(xb + i * d, xb + last * d, d);
-                                    if (d2 < min_d2[i]) min_d2[i] = d2;
-                                }
-                                size_t best_i = 0; float best_val = -1.0f;
-                                for (size_t i = 0; i < nb; ++i) {
-                                    if (min_d2[i] > best_val) { best_val = min_d2[i]; best_i = i; }
-                                }
-                                candidate_indices.push_back(best_i);
-                            }
+                        if (pivot_scope == PivotScope::PIVOT_SCOPE_INTER || pivot_scope == PivotScope::PIVOT_SCOPE_HYBRID) {
+                            gather_inter();
                         }
 
-                        // Build pivot-space current_space (s x mprime) row-major: [r * mprime + c]
+                        if (cand_ptrs.empty()) {
+                            // 回退：至少用当前簇一个点
+                            cand_ptrs.push_back(xb);
+                            cand_dbg_idx.push_back(0);
+                        }
+
+                        size_t mprime = std::min(mprime_desired, cand_ptrs.size());
+
+                        // Build pivot-space current_space (s x mprime)
                         std::vector<float> current_space(s * mprime, 0.0f);
                         for (size_t ci = 0; ci < mprime; ++ci) {
-                            const float* pivot_code = xb + candidate_indices[ci] * d;
+                            const float* pivot_code = cand_ptrs[ci];
                             for (size_t rr = 0; rr < s; ++rr) {
                                 const float* row_code = xb + row_indices[rr] * d;
                                 float d2 = calculatedEuclideanDistance(row_code, pivot_code, d);
@@ -767,9 +868,8 @@ void Index::add(size_t n, const float* codes) {
                         debug_piv_idx.clear(); debug_piv_idx.reserve(sel);
                         for (size_t m = 0; m < sel; ++m) {
                             size_t cand_col = selected_local[m];
-                            size_t real_idx = candidate_indices[cand_col];
-                            debug_piv_idx.push_back(real_idx);
-                            std::copy_n(xb + real_idx * d, d, list.pivots.get() + m * d);
+                            debug_piv_idx.push_back(cand_dbg_idx[cand_col]);
+                            std::copy_n(cand_ptrs[cand_col], d, list.pivots.get() + m * d);
                         }
                     };
 
@@ -868,6 +968,8 @@ void Index::single_thread_search(size_t n, const float* queries, size_t k, float
     for (size_t i = 0; i < n; i++) {
         scaner_quantizer->set_query(queries + i * d);
         scaner->set_query(queries + i * d);
+        // count centroid distances calls inside lite_scan (nlist evaluations)
+        IF_STATS { stats->dis_calls_qc += nlist; }
         scaner_quantizer->lite_scan_codes(nlist,
                                           centroid_codes.get(),
                                           reinterpret_cast<const size_t*>(centroid_ids.get()),
@@ -882,12 +984,14 @@ void Index::single_thread_search(size_t n, const float* queries, size_t k, float
                 size_t list_size = list.get_list_size();
                 // cluster-level pruning (L2): use sqrt distances
                 if (list_size > 0 && cluster_prune) {
+                    IF_STATS { stats->total_cluster_count += 1; }
                     float a = std::sqrt(centroid2query);
                     float thr_s = std::sqrt(ratio * simi[0]);
                     thr_s = cluster_prune_beta * thr_s;
                     float rmin = list.get_r_min_sqrt();
                     float rmax = list.get_r_max_sqrt();
                     if (a > rmax + thr_s || a + thr_s < rmin) {
+                        IF_STATS { stats->pruned_cluster_count += 1; }
                         continue; // skip entire cluster
                     }
                 }

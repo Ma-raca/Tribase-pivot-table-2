@@ -75,6 +75,12 @@ class Index {
     bool cluster_prune = false;
     float cluster_prune_beta = 0.98f;
 
+    // MVOA cross-cluster candidate settings
+    PivotScope pivot_scope = PivotScope::PIVOT_SCOPE_INTRA; // intra|inter|hybrid
+    PivotIntraMethod pivot_intra_method = PivotIntraMethod::INTRA_FFT; // fft|fps for intra candidates
+    size_t pivot_cross_k = 8;                 // number of farthest clusters to draw from
+    size_t pivot_cross_per_cluster = 8;       // samples per external cluster
+
     bool verbose;
     EdgeDevice edge_device_enabled;
 

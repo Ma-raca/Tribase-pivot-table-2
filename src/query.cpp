@@ -112,6 +112,22 @@ int main(int argc, char* argv[]) {
         .action([](const std::string& value) -> float { return std::stof(value); })
         .help("conservative factor beta for cluster pruning (use beta*sqrt(thr)");
 
+    // inter/hybrid MVOA candidate settings (only effective when --pivot_method is mvoa/var_orthr/var_ortho)
+    program.add_argument("--pivot_scope")
+        .default_value(std::string("intra"))
+        .help("MVOA candidate scope: intra|inter|hybrid (aliases: internal/self, external/cross, mixed)");
+    program.add_argument("--pivot_intra_method")
+        .default_value(std::string("fft"))
+        .help("MVOA intra candidate sampling: fft|fps");
+    program.add_argument("--pivot_cross_k")
+        .default_value(8ul)
+        .action([](const std::string& value) -> size_t { return std::stoul(value); })
+        .help("MVOA inter/hybrid: use farthest K clusters as external candidate sources");
+    program.add_argument("--pivot_cross_per_cluster")
+        .default_value(8ul)
+        .action([](const std::string& value) -> size_t { return std::stoul(value); })
+        .help("MVOA inter/hybrid: random samples per external cluster as candidate pivots");
+
     try {
         program.parse_args(argc, argv);
     } catch (const std::runtime_error& err) {
@@ -171,6 +187,10 @@ int main(int argc, char* argv[]) {
     size_t pivot_candidate_cap = program.get<size_t>("pivot_candidate_cap");
     float pivot_pca_radius_alpha = program.get<float>("pivot_pca_radius_alpha");
     bool pivot_pca_both_signs = program.get<bool>("pivot_pca_both_signs");
+    PivotScope pivot_scope = str2PivotScope(program.get<std::string>("pivot_scope"));
+    PivotIntraMethod pivot_intra_method = str2PivotIntraMethod(program.get<std::string>("pivot_intra_method"));
+    size_t pivot_cross_k = program.get<size_t>("pivot_cross_k");
+    size_t pivot_cross_per_cluster = program.get<size_t>("pivot_cross_per_cluster");
 
     std::string base_path = std::format("{}/{}/origin/{}_base.{}", benchmarks_path, dataset, dataset, input_format);
     std::string query_path = std::format("{}/{}/origin/{}_query.{}", benchmarks_path, dataset, dataset, input_format);
@@ -412,7 +432,9 @@ int main(int argc, char* argv[]) {
         }
     } else {
         std::tie(base, nb, d) = loadXvecs(base_path);
-        nlist = static_cast<size_t>(std::sqrt(nb));
+        if (nlist == 0) {
+            nlist = static_cast<size_t>(std::sqrt(nb));
+        }
         index = Index(d, nlist, 0, metric, added_opt_levels, subk, sub_nlist, sub_nprobe, verbose,
                       EdgeDevice::EDGEDEVIVE_DISABLED, pivot_m, pivot_method, pivot_ratio,
                       pivot_subset_size, pivot_candidate_ratio, pivot_candidate_cap);
@@ -420,6 +442,10 @@ int main(int argc, char* argv[]) {
         index.pca_both_signs = pivot_pca_both_signs;
         index.cluster_prune = cluster_prune;
         index.cluster_prune_beta = cluster_prune_beta;
+        index.pivot_scope = pivot_scope;
+        index.pivot_intra_method = pivot_intra_method;
+        index.pivot_cross_k = pivot_cross_k;
+        index.pivot_cross_per_cluster = pivot_cross_per_cluster;
 
         auto build_start = std::chrono::high_resolution_clock::now();
         index.train(nb, base.get());
